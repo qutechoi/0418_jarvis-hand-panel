@@ -185,6 +185,18 @@
   pointer-events: none;
 }
 
+.reticle {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin-left: -11px;
+  margin-top: -11px;
+  border-radius: 50%;
+  border: 2px solid rgba(103, 232, 249, 0.95);
+  box-shadow: 0 0 24px rgba(103, 232, 249, 0.6);
+  pointer-events: none;
+}
+
 .hud-overlay {
   position: absolute;
   inset: auto 18px 18px 18px;
@@ -235,6 +247,12 @@
 .control-button.active {
   border-color: rgba(34, 211, 238, 0.42);
   box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.18);
+}
+
+.control-button.hovered {
+  border-color: rgba(125, 211, 252, 0.55);
+  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.12);
+  transform: translateY(-1px);
 }
 
 .metric-card {

@@ -21,6 +21,8 @@ function App() {
   const requestRef = useRef(null)
   const handLandmarkerRef = useRef(null)
   const lastVideoTimeRef = useRef(-1)
+  const controlRefs = useRef({})
+  const pinchLatchRef = useRef(false)
 
   const [tracking, setTracking] = useState(false)
   const [cameraReady, setCameraReady] = useState(false)
@@ -30,6 +32,7 @@ function App() {
   const [confidence, setConfidence] = useState(0)
   const [handCount, setHandCount] = useState(0)
   const [activeControl, setActiveControl] = useState('launch')
+  const [hoveredControl, setHoveredControl] = useState('')
   const [pointer, setPointer] = useState({ x: 50, y: 50 })
 
   const metrics = useMemo(
@@ -74,7 +77,7 @@ function App() {
         await video.play()
         setCameraReady(true)
         setTracking(true)
-        setStatus('손을 화면에 올려봐. pinch와 point를 감지할 수 있어.')
+        setStatus('손을 화면에 올려봐. 컨트롤 위에서 pinch 하면 버튼이 선택돼.')
       } catch (err) {
         setError(err.message || '카메라 또는 모델 초기화에 실패했어.')
         setStatus('초기화 실패')
@@ -128,14 +131,31 @@ function App() {
         const landmarks = results.landmarks[0]
         drawLandmarks(ctx, landmarks, canvas.width, canvas.height)
         const derived = deriveGesture(landmarks)
+        const nextPointer = { x: (1 - landmarks[8].x) * 100, y: landmarks[8].y * 100 }
+
         setGesture(derived.gesture)
         setConfidence(derived.confidence)
         setHandCount(results.landmarks.length)
-        setPointer({ x: (1 - landmarks[8].x) * 100, y: landmarks[8].y * 100 })
+        setPointer(nextPointer)
+
+        const hovered = findHoveredControl(nextPointer, controlRefs.current)
+        setHoveredControl(hovered)
+
+        if (derived.gesture === 'Pinch' && hovered && !pinchLatchRef.current) {
+          setActiveControl(hovered)
+          setStatus(`${labelForControl(hovered)} 컨트롤이 선택됐어.`)
+          pinchLatchRef.current = true
+        }
+
+        if (derived.gesture !== 'Pinch') {
+          pinchLatchRef.current = false
+        }
       } else {
         setGesture('No hand')
         setConfidence(0)
         setHandCount(0)
+        setHoveredControl('')
+        pinchLatchRef.current = false
       }
 
       requestRef.current = requestAnimationFrame(renderLoop)
@@ -152,8 +172,8 @@ function App() {
           <span className="eyebrow">0418 Jarvis Hand Panel</span>
           <h1>JARVIS 스타일 손 제스처 컨트롤 패널</h1>
           <p>
-            MediaPipe Hand Landmarker를 붙여서 실제 웹캠 손 추적을 수행하는 버전이야. 현재는 손 랜드마크,
-            index 포인터, 그리고 간단한 gesture 추론을 보여줘.
+            이제 실제 웹캠 손 추적 위에 hover + pinch 선택이 붙었어. 손가락 포인터를 버튼 위에 올리고 pinch 하면
+            해당 컨트롤이 활성화돼.
           </p>
         </div>
 
@@ -164,7 +184,7 @@ function App() {
           <div className="status-mini-grid">
             <span>Gesture: {gesture}</span>
             <span>Confidence: {confidence.toFixed(2)}</span>
-            <span>Hands: {handCount}</span>
+            <span>Hover: {hoveredControl ? labelForControl(hoveredControl) : 'None'}</span>
           </div>
           {error && <small>{error}</small>}
           <button type="button" className="ghost-button" onClick={() => setTracking((value) => !value)}>
@@ -183,10 +203,11 @@ function App() {
           <div className="camera-stage live">
             <video ref={videoRef} className="camera-video" playsInline muted />
             <canvas ref={canvasRef} className="camera-canvas" />
+            <div className="reticle" style={{ left: `${pointer.x}%`, top: `${pointer.y}%` }} />
             <div className="hud-overlay">
               <span>Gesture: {gesture}</span>
               <span>Pointer: {Math.round(pointer.x)}, {Math.round(pointer.y)}</span>
-              <span>Track: {tracking ? 'active' : 'paused'}</span>
+              <span>Active: {labelForControl(activeControl)}</span>
             </div>
           </div>
         </section>
@@ -208,31 +229,64 @@ function App() {
           </div>
 
           <div className="control-grid">
-            {controls.map((control) => (
-              <button
-                key={control.id}
-                type="button"
-                className={control.id === activeControl ? 'control-button active' : 'control-button'}
-                onClick={() => setActiveControl(control.id)}
-              >
-                <strong>{control.label}</strong>
-                <span>{control.hint}</span>
-              </button>
-            ))}
+            {controls.map((control) => {
+              const isActive = control.id === activeControl
+              const isHovered = control.id === hoveredControl
+
+              return (
+                <button
+                  key={control.id}
+                  ref={(node) => {
+                    controlRefs.current[control.id] = node
+                  }}
+                  type="button"
+                  className={[
+                    'control-button',
+                    isActive ? 'active' : '',
+                    isHovered ? 'hovered' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  onClick={() => setActiveControl(control.id)}
+                >
+                  <strong>{control.label}</strong>
+                  <span>{control.hint}</span>
+                </button>
+              )
+            })}
           </div>
 
           <div className="insight-card">
-            <h3>현재 구현된 제스처</h3>
+            <h3>현재 구현된 인터랙션</h3>
             <ul>
-              <li>Pinch: 엄지와 검지 끝 거리가 가까움</li>
-              <li>Point: 검지만 펴진 상태에 가까움</li>
-              <li>Open Palm: 손가락이 전반적으로 펼쳐짐</li>
+              <li>index finger 위치로 버튼 hover 감지</li>
+              <li>pinch 순간 1회 선택 트리거</li>
+              <li>중복 선택 방지를 위한 pinch latch 적용</li>
             </ul>
           </div>
         </section>
       </section>
     </main>
   )
+}
+
+function findHoveredControl(pointer, refs) {
+  const viewportX = (pointer.x / 100) * window.innerWidth
+  const viewportY = (pointer.y / 100) * window.innerHeight
+
+  for (const [id, node] of Object.entries(refs)) {
+    if (!node) continue
+    const rect = node.getBoundingClientRect()
+    if (viewportX >= rect.left && viewportX <= rect.right && viewportY >= rect.top && viewportY <= rect.bottom) {
+      return id
+    }
+  }
+
+  return ''
+}
+
+function labelForControl(id) {
+  return controls.find((control) => control.id === id)?.label || 'None'
 }
 
 function drawLandmarks(ctx, landmarks, width, height) {
@@ -263,7 +317,8 @@ function deriveGesture(landmarks) {
 
   const pinchDistance = distance(thumbTip, indexTip)
   const isPointing = indexTip.y < indexPip.y && middleTip.y > indexTip.y && ringTip.y > indexTip.y
-  const averageOpenDistance = (distance(wrist, indexTip) + distance(wrist, middleTip) + distance(wrist, ringTip) + distance(wrist, pinkyTip)) / 4
+  const averageOpenDistance =
+    (distance(wrist, indexTip) + distance(wrist, middleTip) + distance(wrist, ringTip) + distance(wrist, pinkyTip)) / 4
 
   if (pinchDistance < 0.05) {
     return { gesture: 'Pinch', confidence: Math.max(0.7, 1 - pinchDistance * 10) }
