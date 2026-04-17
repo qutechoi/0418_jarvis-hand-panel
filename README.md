@@ -2,20 +2,24 @@
 
 JARVIS 스타일의 손 제스처 컨트롤 패널 프로토타입입니다.
 
-웹캠 기반 손 트래킹 앱을 상정해, 제스처 상태(Open Palm, Pinch, Point, Swipe)에 따라 HUD 스타일 패널이 반응하는 UI를 React + Vite로 구성했습니다.
+이번 버전은 MediaPipe Hand Landmarker를 연결해서 실제 웹캠 손 추적을 수행합니다. 손 랜드마크를 화면에 오버레이하고, 간단한 gesture 추론으로 Open Palm, Pinch, Point 상태를 HUD에 반영합니다.
 
 ## Features
 
 - JARVIS 스타일 다크 HUD 인터페이스
-- 제스처 상태 전환 시각화
-- 카메라 피드 모형 + 손 포인터 표시
-- 제스처 버튼 및 컨트롤 패널 프로토타입
-- 향후 MediaPipe/Three.js 연결을 염두에 둔 구조
+- 실제 웹캠 기반 손 랜드마크 추적
+- index finger 기준 포인터 좌표 표시
+- 간단한 gesture inference
+  - Pinch
+  - Point
+  - Open Palm
+- Control Dashboard와 실시간 상태 연동
 
 ## Stack
 
 - React
 - Vite
+- MediaPipe Tasks Vision
 - CSS
 
 ## Local Development
@@ -25,6 +29,8 @@ npm install
 npm run dev
 ```
 
+브라우저에서 카메라 권한 허용이 필요합니다.
+
 ## Build
 
 ```bash
@@ -33,7 +39,7 @@ npm run build
 
 ## Next Step Ideas
 
-- MediaPipe Hand Landmarker 연결
-- Pinch 거리 기반 실제 선택 로직
-- Three.js HUD / particle effect 연동
-- WebXR 또는 full-screen immersive mode 확장
+- Pinch를 실제 버튼 선택 이벤트로 연결
+- landmark smoothing / debounce 추가
+- Three.js particle HUD 연동
+- gesture history trail 또는 command palette 추가
