@@ -117,13 +117,13 @@ function App() {
 
   const pushCommandLog = (entry) => {
     setCommandLog((current) => [entry, ...current].slice(0, 4))
-  }, [isMuted])
+  }
 
-  const playFeedback = (controlId, trigger) => {
+  const playFeedback = useCallback((controlId, trigger) => {
     if (isMuted) return
     playTone(audioContextRef, controlId)
     speakFeedback(voiceRef, `${labelForControl(controlId)} ${trigger}`)
-  }, [runControlAction])
+  }, [isMuted])
 
   const runControlAction = useCallback((controlId, trigger = 'tap') => {
     setActiveControl(controlId)
@@ -166,7 +166,7 @@ function App() {
         return next
       })
     }
-  }
+  }, [playFeedback])
 
   const updateDwell = useCallback((hovered) => {
     const now = performance.now()
@@ -195,7 +195,7 @@ function App() {
       dwellRef.current = { ...dwellRef.current, fired: true }
       runControlAction(hovered, 'dwell')
     }
-  }
+  }, [runControlAction])
 
   useEffect(() => {
     if (!tracking || !cameraReady) return
@@ -274,7 +274,7 @@ function App() {
 
     requestRef.current = requestAnimationFrame(renderLoop)
     return () => cancelAnimationFrame(requestRef.current)
-  }, [tracking, cameraReady, isLocked, isMuted, isPanelLaunched])
+  }, [tracking, cameraReady, isLocked, isMuted, isPanelLaunched, runControlAction, updateDwell])
 
   return (
     <main className={pulseActive ? 'page-shell pulse-active' : 'page-shell'}>
