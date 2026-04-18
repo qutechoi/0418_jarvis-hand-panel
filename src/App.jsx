@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
+import * as THREE from 'three'
 import './App.css'
 
 const basePanels = [
   { id: 'scan', title: 'SYSTEM SCAN', value: 'LIVE', detail: '랜드마크와 손 상태를 분석 중' },
-  { id: 'intent', title: 'INTENT', value: 'GESTURE', detail: 'pinch / point / open palm 후처리' },
-  { id: 'focus', title: 'FOCUS', value: 'HUD', detail: '손 위치로 UI 중심 이동 가능' },
+  { id: 'intent', title: 'INTENT', value: 'GESTURE', detail: 'pinch / point / hover dwell 감지' },
+  { id: 'focus', title: 'FOCUS', value: 'HUD', detail: '보정된 포인터와 HUD 중심 좌표' },
 ]
 
 const controls = [
@@ -15,15 +16,23 @@ const controls = [
   { id: 'mute', label: 'Mute', hint: '알림 끄기' },
 ]
 
+const SMOOTHING_FACTOR = 0.18
+const DWELL_MS = 1400
+
 function App() {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const hudCanvasRef = useRef(null)
   const requestRef = useRef(null)
   const handLandmarkerRef = useRef(null)
   const lastVideoTimeRef = useRef(-1)
   const controlRefs = useRef({})
   const pinchLatchRef = useRef(false)
   const pulseTimeoutRef = useRef(null)
+  const smoothedPointerRef = useRef({ x: 50, y: 50 })
+  const dwellRef = useRef({ id: '', startedAt: 0, fired: false })
+  const audioContextRef = useRef(null)
+  const voiceRef = useRef(null)
 
   const [tracking, setTracking] = useState(false)
   const [cameraReady, setCameraReady] = useState(false)
@@ -35,6 +44,7 @@ function App() {
   const [activeControl, setActiveControl] = useState('launch')
   const [hoveredControl, setHoveredControl] = useState('')
   const [pointer, setPointer] = useState({ x: 50, y: 50 })
+  const [dwellProgress, setDwellProgress] = useState(0)
   const [isLocked, setIsLocked] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
   const [isPanelLaunched, setIsPanelLaunched] = useState(true)
@@ -49,8 +59,12 @@ function App() {
     return panels
   }, [gesture, pointer.x, pointer.y, tracking])
 
+  useHudScene(hudCanvasRef, pointer, pulseActive, hoveredControl)
+
   useEffect(() => {
     let stream
+
+    const audioContext = audioContextRef.current
 
     const setup = async () => {
       try {
@@ -82,7 +96,7 @@ function App() {
         await video.play()
         setCameraReady(true)
         setTracking(true)
-        setStatus('손을 화면에 올려봐. 컨트롤 위에서 pinch 하면 HUD가 반응해.')
+        setStatus('손을 화면에 올려봐. 호버를 잠시 유지하거나 pinch 하면 HUD가 반응해.')
       } catch (err) {
         setError(err.message || '카메라 또는 모델 초기화에 실패했어.')
         setStatus('초기화 실패')
@@ -96,8 +110,92 @@ function App() {
       if (pulseTimeoutRef.current) clearTimeout(pulseTimeoutRef.current)
       stream?.getTracks().forEach((track) => track.stop())
       handLandmarkerRef.current?.close?.()
+      window.speechSynthesis?.cancel()
+      audioContext?.close?.()
     }
   }, [])
+
+  const pushCommandLog = (entry) => {
+    setCommandLog((current) => [entry, ...current].slice(0, 4))
+  }, [isMuted])
+
+  const playFeedback = (controlId, trigger) => {
+    if (isMuted) return
+    playTone(audioContextRef, controlId)
+    speakFeedback(voiceRef, `${labelForControl(controlId)} ${trigger}`)
+  }, [runControlAction])
+
+  const runControlAction = useCallback((controlId, trigger = 'tap') => {
+    setActiveControl(controlId)
+
+    if (controlId === 'launch') {
+      setIsPanelLaunched(true)
+      setStatus(`HUD 패널을 전면 활성화했어. (${trigger})`)
+      pushCommandLog(`LAUNCH PANEL · ${trigger.toUpperCase()}`)
+      playFeedback(controlId, trigger)
+      return
+    }
+
+    if (controlId === 'lock') {
+      setIsLocked((value) => {
+        const next = !value
+        setStatus(next ? `포인터 위치를 잠갔어. (${trigger})` : `포인터 잠금을 해제했어. (${trigger})`)
+        pushCommandLog(next ? `LOCK TARGET · ${trigger.toUpperCase()}` : `UNLOCK TARGET · ${trigger.toUpperCase()}`)
+        playFeedback(next ? 'lock-on' : 'lock-off', trigger)
+        return next
+      })
+      return
+    }
+
+    if (controlId === 'pulse') {
+      setPulseActive(true)
+      setStatus(`Pulse 이펙트를 재생했어. (${trigger})`)
+      pushCommandLog(`PULSE TRIGGERED · ${trigger.toUpperCase()}`)
+      playFeedback(controlId, trigger)
+      if (pulseTimeoutRef.current) clearTimeout(pulseTimeoutRef.current)
+      pulseTimeoutRef.current = setTimeout(() => setPulseActive(false), 700)
+      return
+    }
+
+    if (controlId === 'mute') {
+      setIsMuted((value) => {
+        const next = !value
+        setStatus(next ? `알림을 음소거했어. (${trigger})` : `알림을 다시 켰어. (${trigger})`)
+        pushCommandLog(next ? `MUTE ALERTS · ${trigger.toUpperCase()}` : `UNMUTE ALERTS · ${trigger.toUpperCase()}`)
+        if (!next) playFeedback('unmute', trigger)
+        return next
+      })
+    }
+  }
+
+  const updateDwell = useCallback((hovered) => {
+    const now = performance.now()
+
+    if (!hovered) {
+      dwellRef.current = { id: '', startedAt: 0, fired: false }
+      setDwellProgress(0)
+      return
+    }
+
+    if (dwellRef.current.id !== hovered) {
+      dwellRef.current = { id: hovered, startedAt: now, fired: false }
+      setDwellProgress(0)
+      return
+    }
+
+    if (dwellRef.current.fired) {
+      setDwellProgress(1)
+      return
+    }
+
+    const progress = Math.min((now - dwellRef.current.startedAt) / DWELL_MS, 1)
+    setDwellProgress(progress)
+
+    if (progress >= 1) {
+      dwellRef.current = { ...dwellRef.current, fired: true }
+      runControlAction(hovered, 'dwell')
+    }
+  }
 
   useEffect(() => {
     if (!tracking || !cameraReady) return
@@ -105,7 +203,7 @@ function App() {
     const renderLoop = () => {
       const video = videoRef.current
       const canvas = canvasRef.current
-      const ctx = canvas.getContext('2d')
+      const ctx = canvas?.getContext('2d')
       const handLandmarker = handLandmarkerRef.current
 
       if (!video || !canvas || !ctx || !handLandmarker) {
@@ -138,17 +236,23 @@ function App() {
         drawLandmarks(ctx, landmarks, canvas.width, canvas.height)
         const derived = deriveGesture(landmarks)
         const nextPointer = { x: (1 - landmarks[8].x) * 100, y: landmarks[8].y * 100 }
+        const smoothedPointer = isLocked
+          ? smoothedPointerRef.current
+          : smoothPointer(smoothedPointerRef.current, nextPointer, SMOOTHING_FACTOR)
+
+        smoothedPointerRef.current = smoothedPointer
 
         setGesture(derived.gesture)
         setConfidence(derived.confidence)
         setHandCount(results.landmarks.length)
-        setPointer(nextPointer)
+        setPointer(smoothedPointer)
 
-        const hovered = findHoveredControl(nextPointer, controlRefs.current)
+        const hovered = findHoveredControl(smoothedPointer, controlRefs.current)
         setHoveredControl(hovered)
+        updateDwell(hovered)
 
         if (derived.gesture === 'Pinch' && hovered && !pinchLatchRef.current) {
-          runControlAction(hovered)
+          runControlAction(hovered, 'pinch')
           pinchLatchRef.current = true
         }
 
@@ -160,6 +264,8 @@ function App() {
         setConfidence(0)
         setHandCount(0)
         setHoveredControl('')
+        setDwellProgress(0)
+        dwellRef.current = { id: '', startedAt: 0, fired: false }
         pinchLatchRef.current = false
       }
 
@@ -170,49 +276,6 @@ function App() {
     return () => cancelAnimationFrame(requestRef.current)
   }, [tracking, cameraReady, isLocked, isMuted, isPanelLaunched])
 
-  const runControlAction = (controlId) => {
-    setActiveControl(controlId)
-
-    if (controlId === 'launch') {
-      setIsPanelLaunched(true)
-      setStatus('HUD 패널을 전면 활성화했어.')
-      pushCommandLog('LAUNCH PANEL')
-      return
-    }
-
-    if (controlId === 'lock') {
-      setIsLocked((value) => {
-        const next = !value
-        setStatus(next ? '포인터 위치를 잠갔어.' : '포인터 잠금을 해제했어.')
-        pushCommandLog(next ? 'LOCK TARGET' : 'UNLOCK TARGET')
-        return next
-      })
-      return
-    }
-
-    if (controlId === 'pulse') {
-      setPulseActive(true)
-      setStatus('Pulse 이펙트를 재생했어.')
-      pushCommandLog('PULSE TRIGGERED')
-      if (pulseTimeoutRef.current) clearTimeout(pulseTimeoutRef.current)
-      pulseTimeoutRef.current = setTimeout(() => setPulseActive(false), 700)
-      return
-    }
-
-    if (controlId === 'mute') {
-      setIsMuted((value) => {
-        const next = !value
-        setStatus(next ? '알림을 음소거했어.' : '알림을 다시 켰어.')
-        pushCommandLog(next ? 'MUTE ALERTS' : 'UNMUTE ALERTS')
-        return next
-      })
-    }
-  }
-
-  const pushCommandLog = (entry) => {
-    setCommandLog((current) => [entry, ...current].slice(0, 4))
-  }
-
   return (
     <main className={pulseActive ? 'page-shell pulse-active' : 'page-shell'}>
       <section className="hero-card">
@@ -220,8 +283,8 @@ function App() {
           <span className="eyebrow">0418 Jarvis Hand Panel</span>
           <h1>JARVIS 스타일 손 제스처 컨트롤 패널</h1>
           <p>
-            이제 버튼별 실제 액션이 붙었어. pinch로 선택하면 HUD 상태, 이펙트, 로그가 같이 반응해서 훨씬 데모답게
-            움직여.
+            스무딩된 포인터, hover dwell, HUD 파티클 이펙트, 음성 피드백까지 붙어서 손 제스처 데모가 훨씬 안정적으로
+            반응해.
           </p>
         </div>
 
@@ -233,6 +296,7 @@ function App() {
             <span>Gesture: {gesture}</span>
             <span>Hover: {hoveredControl ? labelForControl(hoveredControl) : 'None'}</span>
             <span>Mode: {isLocked ? 'Locked' : 'Free'}</span>
+            <span>Dwell: {Math.round(dwellProgress * 100)}%</span>
           </div>
           {error && <small>{error}</small>}
           <button type="button" className="ghost-button" onClick={() => setTracking((value) => !value)}>
@@ -251,11 +315,18 @@ function App() {
           <div className={isPanelLaunched ? 'camera-stage live launched' : 'camera-stage live'}>
             <video ref={videoRef} className="camera-video" playsInline muted />
             <canvas ref={canvasRef} className="camera-canvas" />
-            <div className={isLocked ? 'reticle locked' : 'reticle'} style={{ left: `${pointer.x}%`, top: `${pointer.y}%` }} />
+            <canvas ref={hudCanvasRef} className="hud-canvas" />
+            <div className={isLocked ? 'reticle locked' : 'reticle'} style={{ left: `${pointer.x}%`, top: `${pointer.y}%` }}>
+              <span className="reticle-core" />
+              <svg viewBox="0 0 120 120" className="reticle-ring" style={{ '--progress': dwellProgress }}>
+                <circle cx="60" cy="60" r="52" pathLength="1" />
+              </svg>
+            </div>
             <div className="hud-overlay">
               <span>Gesture: {gesture}</span>
               <span>Pointer: {Math.round(pointer.x)}, {Math.round(pointer.y)}</span>
               <span>Audio: {isMuted ? 'Muted' : 'On'}</span>
+              <span>Confidence: {(confidence * 100).toFixed(0)}%</span>
             </div>
             <div className="stage-badge-row">
               <span className={isPanelLaunched ? 'stage-badge active' : 'stage-badge'}>Launch</span>
@@ -301,9 +372,12 @@ function App() {
                   ]
                     .filter(Boolean)
                     .join(' ')}
-                  onClick={() => runControlAction(control.id)}
+                  onClick={() => runControlAction(control.id, 'click')}
                 >
-                  <strong>{control.label}</strong>
+                  <div className="control-button-head">
+                    <strong>{control.label}</strong>
+                    {isHovered && <em>{Math.round(dwellProgress * 100)}%</em>}
+                  </div>
                   <span>{control.hint}</span>
                 </button>
               )
@@ -323,17 +397,206 @@ function App() {
             <div className="insight-card">
               <h3>현재 구현된 인터랙션</h3>
               <ul>
-                <li>Launch: HUD 강조 상태 유지</li>
-                <li>Lock: 포인터 잠금 모드 표시</li>
-                <li>Pulse: 배경 pulse effect 재생</li>
-                <li>Mute: 오디오 상태 토글</li>
+                <li>지수 보정 포인터 스무딩</li>
+                <li>Hover dwell 1.4초 자동 활성화</li>
+                <li>Pinch 직접 선택 유지</li>
+                <li>Three.js HUD 파티클 + 리액티브 링</li>
+                <li>Web Audio + SpeechSynthesis 피드백</li>
               </ul>
             </div>
+          </div>
+
+          <div className="footnote-row">
+            <span>Hands: {handCount}</span>
+            <span>Smoothing: {SMOOTHING_FACTOR}</span>
+            <span>Dwell: {DWELL_MS}ms</span>
           </div>
         </section>
       </section>
     </main>
   )
+}
+
+function useHudScene(canvasRef, pointer, pulseActive, hoveredControl) {
+  const motionRef = useRef({ pointer, pulseActive, hoveredControl })
+
+  useEffect(() => {
+    motionRef.current = { pointer, pulseActive, hoveredControl }
+  }, [hoveredControl, pointer, pulseActive])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100)
+    camera.position.z = 7
+
+    const group = new THREE.Group()
+    scene.add(group)
+
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(1.4, 1.48, 128),
+      new THREE.MeshBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.75, side: THREE.DoubleSide }),
+    )
+    group.add(ring)
+
+    const innerRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.75, 0.8, 96),
+      new THREE.MeshBasicMaterial({ color: 0x60a5fa, transparent: true, opacity: 0.45, side: THREE.DoubleSide }),
+    )
+    group.add(innerRing)
+
+    const particleCount = 180
+    const positions = new Float32Array(particleCount * 3)
+    const scales = []
+
+    for (let index = 0; index < particleCount; index += 1) {
+      const angle = (index / particleCount) * Math.PI * 2
+      const radius = 2.1 + Math.random() * 0.9
+      positions[index * 3] = Math.cos(angle) * radius
+      positions[index * 3 + 1] = Math.sin(angle) * radius
+      positions[index * 3 + 2] = (Math.random() - 0.5) * 0.4
+      scales.push(0.7 + Math.random() * 1.2)
+    }
+
+    const particleGeometry = new THREE.BufferGeometry()
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+
+    const particles = new THREE.Points(
+      particleGeometry,
+      new THREE.PointsMaterial({
+        color: 0x7dd3fc,
+        size: 0.06,
+        transparent: true,
+        opacity: 0.9,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    )
+    scene.add(particles)
+
+    const clock = new THREE.Clock()
+
+    const resize = () => {
+      const parent = canvas.parentElement
+      if (!parent) return
+      const width = parent.clientWidth
+      const height = parent.clientHeight
+      renderer.setSize(width, height, false)
+      camera.aspect = width / height
+      camera.updateProjectionMatrix()
+    }
+
+    resize()
+    window.addEventListener('resize', resize)
+
+    let frameId = 0
+    const animate = () => {
+      const elapsed = clock.getElapsedTime()
+      const { pointer: livePointer, pulseActive: livePulse, hoveredControl: liveHover } = motionRef.current
+      const energy = livePulse ? 1 : liveHover ? 0.65 : 0.35
+
+      group.rotation.z += 0.003 + energy * 0.01
+      ring.scale.setScalar(1 + Math.sin(elapsed * 2.2) * 0.03 + energy * 0.12)
+      innerRing.rotation.z -= 0.01
+      innerRing.scale.setScalar(1 + Math.cos(elapsed * 1.7) * 0.04)
+
+      particles.rotation.z -= 0.0025
+      particles.position.x = ((livePointer.x - 50) / 50) * 0.9
+      particles.position.y = -((livePointer.y - 50) / 50) * 0.55
+
+      const attribute = particleGeometry.attributes.position
+      for (let index = 0; index < particleCount; index += 1) {
+        const base = index * 3
+        const angle = (index / particleCount) * Math.PI * 2 + elapsed * (0.15 + energy * 0.4)
+        const radius = 2.2 + Math.sin(elapsed * scales[index] + index) * 0.14
+        attribute.array[base] = Math.cos(angle) * radius
+        attribute.array[base + 1] = Math.sin(angle) * radius
+      }
+      attribute.needsUpdate = true
+
+      renderer.render(scene, camera)
+      frameId = requestAnimationFrame(animate)
+    }
+
+    animate()
+
+    return () => {
+      cancelAnimationFrame(frameId)
+      window.removeEventListener('resize', resize)
+      renderer.dispose()
+      ring.geometry.dispose()
+      ring.material.dispose()
+      innerRing.geometry.dispose()
+      innerRing.material.dispose()
+      particleGeometry.dispose()
+      particles.material.dispose()
+    }
+  }, [canvasRef])
+}
+
+function smoothPointer(current, target, factor) {
+  return {
+    x: current.x + (target.x - current.x) * factor,
+    y: current.y + (target.y - current.y) * factor,
+  }
+}
+
+function playTone(audioContextRef, controlId) {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext
+  if (!AudioContextClass) return
+
+  if (!audioContextRef.current) {
+    audioContextRef.current = new AudioContextClass()
+  }
+
+  const context = audioContextRef.current
+  if (context.state === 'suspended') {
+    context.resume().catch(() => {})
+  }
+
+  const now = context.currentTime
+  const oscillator = context.createOscillator()
+  const gain = context.createGain()
+  const frequencies = {
+    launch: 540,
+    pulse: 720,
+    mute: 260,
+    unmute: 480,
+    'lock-on': 620,
+    'lock-off': 350,
+  }
+
+  oscillator.type = controlId === 'pulse' ? 'triangle' : 'sine'
+  oscillator.frequency.setValueAtTime(frequencies[controlId] || 440, now)
+  gain.gain.setValueAtTime(0.001, now)
+  gain.gain.exponentialRampToValueAtTime(0.045, now + 0.01)
+  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18)
+  oscillator.connect(gain)
+  gain.connect(context.destination)
+  oscillator.start(now)
+  oscillator.stop(now + 0.2)
+}
+
+function speakFeedback(voiceRef, text) {
+  if (!window.speechSynthesis) return
+  window.speechSynthesis.cancel()
+  const utterance = new SpeechSynthesisUtterance(text)
+  utterance.rate = 1.05
+  utterance.pitch = 1.05
+  utterance.volume = 0.75
+
+  if (!voiceRef.current) {
+    const voices = window.speechSynthesis.getVoices()
+    voiceRef.current = voices.find((voice) => /en|ko/i.test(voice.lang)) || null
+  }
+
+  if (voiceRef.current) utterance.voice = voiceRef.current
+  window.speechSynthesis.speak(utterance)
 }
 
 function findHoveredControl(pointer, refs) {
@@ -352,7 +615,7 @@ function findHoveredControl(pointer, refs) {
 }
 
 function labelForControl(id) {
-  return controls.find((control) => control.id === id)?.label || 'None'
+  return controls.find((control) => control.id === id)?.label || id || 'None'
 }
 
 function drawLandmarks(ctx, landmarks, width, height) {

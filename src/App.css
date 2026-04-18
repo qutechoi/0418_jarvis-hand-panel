@@ -58,7 +58,8 @@
 .status-label,
 .panel-head span,
 .metric-card span,
-.stage-badge {
+.stage-badge,
+.footnote-row span {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -93,7 +94,8 @@
 .metric-card p,
 .control-button span,
 .insight-card li,
-.command-list li {
+.command-list li,
+.footnote-row span {
   color: #9ec7d4;
 }
 
@@ -185,7 +187,8 @@
 }
 
 .camera-video,
-.camera-canvas {
+.camera-canvas,
+.hud-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -198,25 +201,57 @@
   transform: scaleX(-1);
 }
 
-.camera-canvas {
+.camera-canvas,
+.hud-canvas {
   pointer-events: none;
 }
 
+.hud-canvas {
+  opacity: 0.9;
+  mix-blend-mode: screen;
+}
+
 .reticle {
+  --progress: 0;
   position: absolute;
-  width: 22px;
-  height: 22px;
-  margin-left: -11px;
-  margin-top: -11px;
+  width: 72px;
+  height: 72px;
+  margin-left: -36px;
+  margin-top: -36px;
   border-radius: 50%;
   border: 2px solid rgba(103, 232, 249, 0.95);
   box-shadow: 0 0 24px rgba(103, 232, 249, 0.6);
   pointer-events: none;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(circle, rgba(103, 232, 249, 0.08), transparent 62%);
 }
 
 .reticle.locked {
   border-color: rgba(250, 204, 21, 0.95);
   box-shadow: 0 0 24px rgba(250, 204, 21, 0.45);
+}
+
+.reticle-core {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d8fbff;
+  box-shadow: 0 0 18px rgba(216, 251, 255, 0.9);
+}
+
+.reticle-ring {
+  position: absolute;
+  inset: 4px;
+  transform: rotate(-90deg);
+}
+
+.reticle-ring circle {
+  fill: none;
+  stroke: rgba(125, 211, 252, 0.92);
+  stroke-width: 5;
+  stroke-dasharray: 1;
+  stroke-dashoffset: calc(1 - var(--progress));
 }
 
 .hud-overlay {
@@ -225,6 +260,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  z-index: 2;
 }
 
 .hud-overlay span {
@@ -257,12 +293,26 @@
   padding: 16px;
   text-align: left;
   cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
 .control-button strong {
   display: block;
   margin-bottom: 8px;
   color: #e0f7ff;
+}
+
+.control-button-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.control-button-head em {
+  color: #67e8f9;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .control-button.active {
@@ -306,6 +356,20 @@
 
 .command-list li + li {
   margin-top: 8px;
+}
+
+.footnote-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.footnote-row span {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  font-size: 0.78rem;
 }
 
 @media (max-width: 920px) {
