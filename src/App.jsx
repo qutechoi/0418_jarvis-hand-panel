@@ -69,7 +69,7 @@ function App() {
     const setup = async () => {
       try {
         const vision = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm',
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
         )
 
         handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
@@ -479,7 +479,8 @@ function useHudScene(canvasRef, pointer, pulseActive, hoveredControl) {
     )
     scene.add(particles)
 
-    const clock = new THREE.Clock()
+    const timer = new THREE.Timer()
+    timer.connect(document)
 
     const resize = () => {
       const parent = canvas.parentElement
@@ -496,7 +497,8 @@ function useHudScene(canvasRef, pointer, pulseActive, hoveredControl) {
 
     let frameId = 0
     const animate = () => {
-      const elapsed = clock.getElapsedTime()
+      timer.update()
+      const elapsed = timer.getElapsed()
       const { pointer: livePointer, pulseActive: livePulse, hoveredControl: liveHover } = motionRef.current
       const energy = livePulse ? 1 : liveHover ? 0.65 : 0.35
 
@@ -528,6 +530,7 @@ function useHudScene(canvasRef, pointer, pulseActive, hoveredControl) {
     return () => {
       cancelAnimationFrame(frameId)
       window.removeEventListener('resize', resize)
+      timer.dispose?.()
       renderer.dispose()
       ring.geometry.dispose()
       ring.material.dispose()
