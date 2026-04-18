@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision'
 import './App.css'
 
-const panels = [
+const basePanels = [
   { id: 'scan', title: 'SYSTEM SCAN', value: 'LIVE', detail: '랜드마크와 손 상태를 분석 중' },
   { id: 'intent', title: 'INTENT', value: 'GESTURE', detail: 'pinch / point / open palm 후처리' },
   { id: 'focus', title: 'FOCUS', value: 'HUD', detail: '손 위치로 UI 중심 이동 가능' },
@@ -23,6 +23,7 @@ function App() {
   const lastVideoTimeRef = useRef(-1)
   const controlRefs = useRef({})
   const pinchLatchRef = useRef(false)
+  const pulseTimeoutRef = useRef(null)
 
   const [tracking, setTracking] = useState(false)
   const [cameraReady, setCameraReady] = useState(false)
@@ -34,15 +35,19 @@ function App() {
   const [activeControl, setActiveControl] = useState('launch')
   const [hoveredControl, setHoveredControl] = useState('')
   const [pointer, setPointer] = useState({ x: 50, y: 50 })
+  const [isLocked, setIsLocked] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isPanelLaunched, setIsPanelLaunched] = useState(true)
+  const [pulseActive, setPulseActive] = useState(false)
+  const [commandLog, setCommandLog] = useState(['SYSTEM READY'])
 
-  const metrics = useMemo(
-    () => [
-      { ...panels[0], value: tracking ? 'LIVE' : 'PAUSED' },
-      { ...panels[1], value: gesture.toUpperCase() },
-      { ...panels[2], value: `${Math.round(pointer.x)} / ${Math.round(pointer.y)}` },
-    ],
-    [gesture, pointer.x, pointer.y, tracking],
-  )
+  const metrics = useMemo(() => {
+    const panels = [...basePanels]
+    panels[0] = { ...panels[0], value: tracking ? 'LIVE' : 'PAUSED' }
+    panels[1] = { ...panels[1], value: gesture.toUpperCase() }
+    panels[2] = { ...panels[2], value: `${Math.round(pointer.x)} / ${Math.round(pointer.y)}` }
+    return panels
+  }, [gesture, pointer.x, pointer.y, tracking])
 
   useEffect(() => {
     let stream
@@ -77,7 +82,7 @@ function App() {
         await video.play()
         setCameraReady(true)
         setTracking(true)
-        setStatus('손을 화면에 올려봐. 컨트롤 위에서 pinch 하면 버튼이 선택돼.')
+        setStatus('손을 화면에 올려봐. 컨트롤 위에서 pinch 하면 HUD가 반응해.')
       } catch (err) {
         setError(err.message || '카메라 또는 모델 초기화에 실패했어.')
         setStatus('초기화 실패')
@@ -88,6 +93,7 @@ function App() {
 
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current)
+      if (pulseTimeoutRef.current) clearTimeout(pulseTimeoutRef.current)
       stream?.getTracks().forEach((track) => track.stop())
       handLandmarkerRef.current?.close?.()
     }
@@ -142,8 +148,7 @@ function App() {
         setHoveredControl(hovered)
 
         if (derived.gesture === 'Pinch' && hovered && !pinchLatchRef.current) {
-          setActiveControl(hovered)
-          setStatus(`${labelForControl(hovered)} 컨트롤이 선택됐어.`)
+          runControlAction(hovered)
           pinchLatchRef.current = true
         }
 
@@ -163,17 +168,60 @@ function App() {
 
     requestRef.current = requestAnimationFrame(renderLoop)
     return () => cancelAnimationFrame(requestRef.current)
-  }, [tracking, cameraReady])
+  }, [tracking, cameraReady, isLocked, isMuted, isPanelLaunched])
+
+  const runControlAction = (controlId) => {
+    setActiveControl(controlId)
+
+    if (controlId === 'launch') {
+      setIsPanelLaunched(true)
+      setStatus('HUD 패널을 전면 활성화했어.')
+      pushCommandLog('LAUNCH PANEL')
+      return
+    }
+
+    if (controlId === 'lock') {
+      setIsLocked((value) => {
+        const next = !value
+        setStatus(next ? '포인터 위치를 잠갔어.' : '포인터 잠금을 해제했어.')
+        pushCommandLog(next ? 'LOCK TARGET' : 'UNLOCK TARGET')
+        return next
+      })
+      return
+    }
+
+    if (controlId === 'pulse') {
+      setPulseActive(true)
+      setStatus('Pulse 이펙트를 재생했어.')
+      pushCommandLog('PULSE TRIGGERED')
+      if (pulseTimeoutRef.current) clearTimeout(pulseTimeoutRef.current)
+      pulseTimeoutRef.current = setTimeout(() => setPulseActive(false), 700)
+      return
+    }
+
+    if (controlId === 'mute') {
+      setIsMuted((value) => {
+        const next = !value
+        setStatus(next ? '알림을 음소거했어.' : '알림을 다시 켰어.')
+        pushCommandLog(next ? 'MUTE ALERTS' : 'UNMUTE ALERTS')
+        return next
+      })
+    }
+  }
+
+  const pushCommandLog = (entry) => {
+    setCommandLog((current) => [entry, ...current].slice(0, 4))
+  }
 
   return (
-    <main className="page-shell">
+    <main className={pulseActive ? 'page-shell pulse-active' : 'page-shell'}>
       <section className="hero-card">
         <div className="hero-copy">
           <span className="eyebrow">0418 Jarvis Hand Panel</span>
           <h1>JARVIS 스타일 손 제스처 컨트롤 패널</h1>
           <p>
-            이제 실제 웹캠 손 추적 위에 hover + pinch 선택이 붙었어. 손가락 포인터를 버튼 위에 올리고 pinch 하면
-            해당 컨트롤이 활성화돼.
+            이제 버튼별 실제 액션이 붙었어. pinch로 선택하면 HUD 상태, 이펙트, 로그가 같이 반응해서 훨씬 데모답게
+            움직여.
           </p>
         </div>
 
@@ -183,8 +231,8 @@ function App() {
           <p>{status}</p>
           <div className="status-mini-grid">
             <span>Gesture: {gesture}</span>
-            <span>Confidence: {confidence.toFixed(2)}</span>
             <span>Hover: {hoveredControl ? labelForControl(hoveredControl) : 'None'}</span>
+            <span>Mode: {isLocked ? 'Locked' : 'Free'}</span>
           </div>
           {error && <small>{error}</small>}
           <button type="button" className="ghost-button" onClick={() => setTracking((value) => !value)}>
@@ -200,14 +248,20 @@ function App() {
             <span>{cameraReady ? 'LIVE' : 'BOOTING'}</span>
           </div>
 
-          <div className="camera-stage live">
+          <div className={isPanelLaunched ? 'camera-stage live launched' : 'camera-stage live'}>
             <video ref={videoRef} className="camera-video" playsInline muted />
             <canvas ref={canvasRef} className="camera-canvas" />
-            <div className="reticle" style={{ left: `${pointer.x}%`, top: `${pointer.y}%` }} />
+            <div className={isLocked ? 'reticle locked' : 'reticle'} style={{ left: `${pointer.x}%`, top: `${pointer.y}%` }} />
             <div className="hud-overlay">
               <span>Gesture: {gesture}</span>
               <span>Pointer: {Math.round(pointer.x)}, {Math.round(pointer.y)}</span>
-              <span>Active: {labelForControl(activeControl)}</span>
+              <span>Audio: {isMuted ? 'Muted' : 'On'}</span>
+            </div>
+            <div className="stage-badge-row">
+              <span className={isPanelLaunched ? 'stage-badge active' : 'stage-badge'}>Launch</span>
+              <span className={isLocked ? 'stage-badge active' : 'stage-badge'}>Lock</span>
+              <span className={pulseActive ? 'stage-badge active' : 'stage-badge'}>Pulse</span>
+              <span className={isMuted ? 'stage-badge active' : 'stage-badge'}>Mute</span>
             </div>
           </div>
         </section>
@@ -247,7 +301,7 @@ function App() {
                   ]
                     .filter(Boolean)
                     .join(' ')}
-                  onClick={() => setActiveControl(control.id)}
+                  onClick={() => runControlAction(control.id)}
                 >
                   <strong>{control.label}</strong>
                   <span>{control.hint}</span>
@@ -256,13 +310,25 @@ function App() {
             })}
           </div>
 
-          <div className="insight-card">
-            <h3>현재 구현된 인터랙션</h3>
-            <ul>
-              <li>index finger 위치로 버튼 hover 감지</li>
-              <li>pinch 순간 1회 선택 트리거</li>
-              <li>중복 선택 방지를 위한 pinch latch 적용</li>
-            </ul>
+          <div className="bottom-grid">
+            <div className="insight-card command-card">
+              <h3>Command Log</h3>
+              <ul className="command-list">
+                {commandLog.map((entry) => (
+                  <li key={entry}>{entry}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="insight-card">
+              <h3>현재 구현된 인터랙션</h3>
+              <ul>
+                <li>Launch: HUD 강조 상태 유지</li>
+                <li>Lock: 포인터 잠금 모드 표시</li>
+                <li>Pulse: 배경 pulse effect 재생</li>
+                <li>Mute: 오디오 상태 토글</li>
+              </ul>
+            </div>
           </div>
         </section>
       </section>
